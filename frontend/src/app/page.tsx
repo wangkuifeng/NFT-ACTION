@@ -2,15 +2,16 @@
 
 import { useEffect, useState } from 'react'
 import { fetchStats, fetchAuctions } from '@/services/api'
-import { useAccount, useConnect, useDisconnect, useWriteContract, useReadContract, useWaitForTransactionReceipt } from 'wagmi'
+// 👉 引入 usePublicClient 用于手动精准监听任何一笔交易
+import { useAccount, useConnect, useDisconnect, useWriteContract, useReadContract, usePublicClient } from 'wagmi'
 import { injected } from 'wagmi/connectors'
 import { parseEther } from 'viem'
 
 // 合约地址配置
 const AUCTION_CONTRACT_ADDRESS = '0xbf1304F2D77D110a32B150792Ee481212926763D'
-const MOCK_NFT_ADDRESS = '0x4E9b354Bc82728dA2A37E1D281CA12401c032652' // 你的模拟造币厂地址
+const MOCK_NFT_ADDRESS = '0x4E9b354Bc82728dA2A37E1D281CA12401c032652' 
 
-// 1. NFT 合约的 ABI (用于授权和铸造)
+// 1. NFT 合约的 ABI
 const ERC721_ABI = [
   {
     "inputs": [
@@ -72,30 +73,21 @@ export default function Home() {
   const [selectedItem, setSelectedItem] = useState<any>(null) 
   const [bidAmountInput, setBidAmountInput] = useState('')    
 
+  // 👉 新增：为每个核心动作设置独立的 Loading 状态，体验拉满
+  const [isMinting, setIsMinting] = useState(false)
+  const [isListing, setIsListing] = useState(false)
+  const [isBidding, setIsBidding] = useState(false)
+
   const { address, isConnected } = useAccount()
   const { connect } = useConnect()
   const { disconnect } = useDisconnect()
 
-  // 1. 获取发送交易的哈希值 (hash)
-  const { data: hash, writeContract, isPending } = useWriteContract()
+  // 👉 关键核心：引入公共客户端(查收据) 和 异步写入函数
+  const publicClient = usePublicClient()
+  const { writeContractAsync } = useWriteContract()
 
-  // 2. 自动盯盘监听器
-  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
-    hash,
-  })
-
-  // 3. 监听到交易确认成功后，延迟拉取刷新数据
-  useEffect(() => {
-    if (isConfirmed) {
-      setTimeout(() => {
-        fetchStats().then(setStats)
-        fetchAuctions().then(setAuctions)
-      }, 1500) 
-    }
-  }, [isConfirmed])
-
-  // 实时读取造币厂当前发到了第几号
-  const { data: nextTokenIdRaw } = useReadContract({
+  // 实时读取造币厂当前发到了第几号，提取 refetch 方法以便铸造完立刻刷新
+  const { data: nextTokenIdRaw, refetch: refetchNextTokenId } = useReadContract({
     address: MOCK_NFT_ADDRESS as `0x${string}`,
     abi: [{
       "inputs": [],
@@ -115,25 +107,92 @@ export default function Home() {
     fetchAuctions().then(setAuctions)
   }, [])
 
-  // 铸造测试 NFT
-  const handleMintTestNFT = () => {
+  // ==========================================
+  // 1. 丝滑铸造：带链上监听 + 自动回填表单
+  // ==========================================
+  const handleMintTestNFT = async () => {
     if (!address) return alert("请先连接钱包！")
+    try {
+      setIsMinting(true) // 开启 Loading 动画
+      
+      // 1. 发送铸造交易
+      const hash = await writeContractAsync({
+        address: MOCK_NFT_ADDRESS,
+        abi: ERC721_ABI,
+        functionName: 'mint',
+        args: [address], 
+      })
 
-    writeContract({
-      address: MOCK_NFT_ADDRESS,
-      abi: ERC721_ABI,
-      functionName: 'mint',
-      args: [address], 
-    }, {
-      onSuccess: (hash) => alert(`🎉 铸造请求已发送！\n交易哈希: ${hash}\n\n请等待十几秒区块确认。由于这是自动发号的新工厂，如果你是第一次领，你的 Token ID 就是 1！`),
-      onError: (err) => {
-        console.error("铸造失败", err)
-        alert("铸造失败！")
-      }
-    })
+      // 2. 死死盯住这笔交易，直到它被打包进区块！
+      await publicClient!.waitForTransactionReceipt({ hash })
+
+      // 3. 打包成功后，立刻重新查询最新发到了几号
+      const { data: newNext } = await refetchNextTokenId()
+      const mintedId = Number(newNext) - 1
+
+      // 4. 自动把刚刚铸造的 ID 填入上架表单中，彻底告别手动输入！
+      setFormTokenId(mintedId.toString())
+      alert(`🎉 铸造成功且已确认上链！\n\n你获得了 Token #${mintedId}\n系统已自动为你填入上架表单，去点击【+ 发布拍卖】吧！`)
+
+    } catch (err) {
+      console.error("铸造失败", err)
+      alert("交易失败或被取消！")
+    } finally {
+      setIsMinting(false) // 结束 Loading
+    }
   }
 
-  // 打开出价弹窗
+  // ==========================================
+  // 2. 丝滑上架：一键完成 授权(Approve) + 上架(Create)
+  // ==========================================
+  const handleApproveAndList = async () => {
+    if (!formTokenId || !formStartPrice) return alert("请完整填写信息")
+    try {
+      setIsListing(true) // 开启 Loading
+      
+      const startPriceWei = parseEther(formStartPrice)
+      const durationSeconds = BigInt(Number(formDuration) * 24 * 60 * 60) 
+
+      // 步骤 A：发送【授权】交易
+      const hashApprove = await writeContractAsync({
+        address: formNftContract as `0x${string}`,
+        abi: ERC721_ABI,
+        functionName: 'approve',
+        args: [AUCTION_CONTRACT_ADDRESS, BigInt(formTokenId)],
+      })
+      // 盯盘：等待授权上链...
+      await publicClient!.waitForTransactionReceipt({ hash: hashApprove })
+
+      // 步骤 B：授权上链成功后，无缝发送【上架】交易
+      const hashCreate = await writeContractAsync({
+        address: AUCTION_CONTRACT_ADDRESS,
+        abi: AUCTION_ABI,
+        functionName: 'createAuction',
+        args: [formNftContract as `0x${string}`, BigInt(formTokenId), startPriceWei, BigInt(0), durationSeconds],
+      })
+      // 盯盘：等待上架上链...
+      await publicClient!.waitForTransactionReceipt({ hash: hashCreate })
+
+      // 走到这里说明大功告成！
+      setShowModal(false)
+      
+      // 给 Go 后端 1 秒钟把数据存进 MySQL，然后刷新页面
+      setTimeout(() => {
+        fetchStats().then(setStats)
+        fetchAuctions().then(setAuctions)
+      }, 1000)
+
+    } catch (err) {
+      console.error("上架流程失败", err)
+      alert("流程中断！如果你拒绝了交易，请重新操作。")
+    } finally {
+      setIsListing(false)
+    }
+  }
+
+  // ==========================================
+  // 3. 丝滑出价：带链上监听
+  // ==========================================
   const openBidModal = (item: any) => {
     if (!isConnected) return alert("请先连接钱包！")
     setSelectedItem(item)
@@ -146,59 +205,44 @@ export default function Home() {
     setShowBidModal(true)
   }
 
-  // 提交出价
-  const submitBid = () => {
+  const submitBid = async () => {
     if (!selectedItem || !bidAmountInput) return
-
     const inputEth = Number(bidAmountInput)
     const isFirstBid = selectedItem.highest_bid === "0"
     const currentPriceEth = isFirstBid ? Number(selectedItem.start_price) / 1e18 : Number(selectedItem.highest_bid) / 1e18
     
     const minRequiredBid = isFirstBid ? currentPriceEth : currentPriceEth * 1.05
     if (isNaN(inputEth) || inputEth < minRequiredBid * 0.9999) {
-      return alert(`❌ 出价无效！\n\n规则：每次加价幅度不得低于当前价格的 5%。\n当前最低要求为: ${minRequiredBid.toFixed(4)} ETH`)
+      return alert(`❌ 出价无效！\n\n当前最低要求为: ${minRequiredBid.toFixed(4)} ETH`)
     }
 
-    writeContract({
-      address: AUCTION_CONTRACT_ADDRESS,
-      abi: AUCTION_ABI,
-      functionName: 'bidAuction',
-      args: [BigInt(selectedItem.auction_id)],
-      value: parseEther(bidAmountInput),
-    }, {
-      onSuccess: () => setShowBidModal(false) 
-    })
+    try {
+      setIsBidding(true)
+      // 发送出价交易
+      const hash = await writeContractAsync({
+        address: AUCTION_CONTRACT_ADDRESS,
+        abi: AUCTION_ABI,
+        functionName: 'bidAuction',
+        args: [BigInt(selectedItem.auction_id)],
+        value: parseEther(bidAmountInput),
+      })
+      
+      // 盯盘：等待出价被矿工打包...
+      await publicClient!.waitForTransactionReceipt({ hash })
+      
+      setShowBidModal(false) 
+      setTimeout(() => {
+        fetchStats().then(setStats)
+        fetchAuctions().then(setAuctions)
+      }, 1000)
+
+    } catch(err) {
+      console.error("出价失败", err)
+    } finally {
+      setIsBidding(false)
+    }
   }
   
-  // 步骤 1 - 授权 NFT
-  const handleApprove = () => {
-    if (!formTokenId) return alert("请填写 Token ID")
-    writeContract({
-      address: formNftContract as `0x${string}`,
-      abi: ERC721_ABI,
-      functionName: 'approve',
-      args: [AUCTION_CONTRACT_ADDRESS, BigInt(formTokenId)],
-    }, {
-      onSuccess: () => alert("✅ 授权交易已发送！请等待狐狸钱包提示【交易确认】后，再点击下方的【步骤 2: 确认上架】。"),
-      onError: (err) => console.error("授权失败", err)
-    })
-  }
-
-  // 步骤 2 - 确认上架
-  const handleCreateAuction = () => {
-    if (!formTokenId || !formStartPrice) return alert("请完整填写信息")
-    const startPriceWei = parseEther(formStartPrice)
-    const durationSeconds = BigInt(Number(formDuration) * 24 * 60 * 60) 
-
-    writeContract({
-      address: AUCTION_CONTRACT_ADDRESS,
-      abi: AUCTION_ABI,
-      functionName: 'createAuction',
-      args: [formNftContract as `0x${string}`, BigInt(formTokenId), startPriceWei, BigInt(0), durationSeconds],
-    }, {
-      onSuccess: () => setShowModal(false) 
-    })
-  }
 
   return (
     <main className="min-h-screen bg-gray-50 text-slate-900 p-8">
@@ -212,10 +256,10 @@ export default function Home() {
         {mounted && (isConnected ? (
           <div className="flex items-center gap-3">
             <button 
-              onClick={handleMintTestNFT} disabled={isPending}
-              className="bg-purple-100 text-purple-600 px-4 py-2 rounded-xl font-bold hover:bg-purple-200 transition border border-purple-200"
+              onClick={handleMintTestNFT} disabled={isMinting}
+              className="bg-purple-100 text-purple-600 px-4 py-2 rounded-xl font-bold hover:bg-purple-200 transition border border-purple-200 disabled:opacity-50"
             >
-              🎁 领测试 NFT
+              {isMinting ? '⛓️ 铸造上链中...' : '🎁 领测试 NFT'}
             </button>
             <button 
               onClick={() => setShowModal(true)}
@@ -275,15 +319,14 @@ export default function Home() {
                   <div>
                     <p className="text-[10px] text-gray-400 font-bold uppercase">当前最高价</p>
                     <p className="text-xl font-black text-blue-600">
-                      {item.highest_bid === "0" ? (Number(item.start_price) / 1e18).toFixed(3) : (Number(item.highest_bid) / 1e18).toFixed(3)} ETH
+                      {item.highest_bid === "0" ? (Number(item.start_price) / 1e18).toFixed(4) : (Number(item.highest_bid) / 1e18).toFixed(4)} ETH
                     </p>
                   </div>
                   <button 
                     onClick={() => openBidModal(item)} 
-                    disabled={isPending || isConfirming}
-                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-600 transition-colors disabled:opacity-50"
+                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-600 transition-colors"
                   >
-                    {isPending ? '钱包确认...' : isConfirming ? '链上打包 ⏳' : '参与竞拍'}
+                    参与竞拍
                   </button>
                 </div>
               </div>
@@ -293,31 +336,25 @@ export default function Home() {
       </div>
 
       {/* ========================================================= */}
-      {/* 上架拍卖的弹窗 (Modal) */}
+      {/* 极速上架向导弹窗 (Modal) */}
       {/* ========================================================= */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-black">上架 NFT</h2>
+              <h2 className="text-2xl font-black">上架向导</h2>
               <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-red-500 font-bold">✕</button>
             </div>
             
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">NFT 合约地址 (已自动填入测试造币厂)</label>
+                <label className="block text-xs font-bold text-gray-500 mb-1">NFT 合约地址 (已自动填入)</label>
                 <input value={formNftContract} onChange={e => setFormNftContract(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-blue-500" />
               </div>
               <div className="grid grid-cols-2 gap-4">
               <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Token ID</label>
-                  <input type="number" placeholder="例如: 1" value={formTokenId} onChange={e => setFormTokenId(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-blue-500" />
-                  
-                  {latestTokenId > 0 && (
-                    <p className="text-[10px] text-blue-500 font-bold mt-1">
-                      💡 提示：最新铸造出的 ID 是 {latestTokenId} (如果你刚领完，填这个准没错！)
-                    </p>
-                  )}
+                  <input type="number" placeholder="点右上角领装备" value={formTokenId} onChange={e => setFormTokenId(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-blue-500" />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">起拍价 (ETH)</label>
@@ -329,18 +366,15 @@ export default function Home() {
                 <input type="number" value={formDuration} onChange={e => setFormDuration(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-blue-500" />
               </div>
 
-              <div className="mt-8 space-y-3">
+              <div className="mt-8">
+                {/* 👉 神奇的合并按钮：一键执行授权和上架！ */}
                 <button 
-                  onClick={handleApprove} disabled={isPending}
-                  className="w-full bg-blue-50 text-blue-600 border border-blue-200 py-3 rounded-xl font-bold hover:bg-blue-100 transition disabled:opacity-50"
+                  onClick={handleApproveAndList} 
+                  disabled={isListing}
+                  className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all duration-300 disabled:opacity-50 text-lg flex flex-col items-center justify-center"
                 >
-                  步骤 1: 授权 NFT (Approve)
-                </button>
-                <button 
-                  onClick={handleCreateAuction} disabled={isPending}
-                  className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition disabled:opacity-50"
-                >
-                  步骤 2: 确认上架 (Create)
+                  <span>{isListing ? '⏳ 链上处理中... (需连续确认两次交易)' : '一键授权并上架'}</span>
+                  {!isListing && <span className="text-[10px] font-normal mt-1 opacity-80">小狐狸将弹出两次，请耐心等待区块确认</span>}
                 </button>
               </div>
             </div>
@@ -349,7 +383,7 @@ export default function Home() {
       )}
 
       {/* ========================================================= */}
-      {/* 👉 新增：精美的出价弹窗 (Bid Modal)  */}
+      {/* 精美的出价弹窗 (Bid Modal)  */}
       {/* ========================================================= */}
       {showBidModal && selectedItem && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -396,10 +430,10 @@ export default function Home() {
               <div className="mt-8">
                 <button 
                   onClick={submitBid} 
-                  disabled={isPending}
+                  disabled={isBidding}
                   className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold shadow-xl shadow-slate-200 hover:bg-blue-600 hover:shadow-blue-200 transition-all duration-300 disabled:opacity-50 text-lg"
                 >
-                  {isPending ? '唤起钱包中...' : '确认支付'}
+                  {isBidding ? '⏳ 链上打包中...' : '确认支付'}
                 </button>
               </div>
             </div>
