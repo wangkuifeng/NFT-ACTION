@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+
 
 contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     
@@ -128,6 +128,7 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         uint256 auctionId = nextAuctionId;
         uint256 endTime = actualStartTime + duration;
 
+        //上架一个NFT
         auctionData[auctionId] = Auction({
             seller: msg.sender,
             nftContract: nftContract,

@@ -31,7 +31,8 @@ func initDB() *gorm.DB {
 }
 
 func startEventListener(db *gorm.DB) {
-	nodeURL := "ws://127.0.0.1:8545"
+	//nodeURL := "ws://127.0.0.1:8545"
+	nodeURL := "wss://sepolia.infura.io/ws/v3/a4583e6142214f4a8eb27d048a906649"
 	client, err := ethclient.Dial(nodeURL)
 	if err != nil {
 		log.Fatalf("无法连接到以太坊节点: %v", err)
@@ -39,7 +40,7 @@ func startEventListener(db *gorm.DB) {
 	defer client.Close()
 
 	// ⚠️ 记得换成你本地部署的真实 Proxy 合约地址
-	contractAddress := common.HexToAddress("0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0")
+	contractAddress := common.HexToAddress("0xbf1304F2D77D110a32B150792Ee481212926763D")
 	auctionFilterer, err := auction.NewNFTAuctionFilterer(contractAddress, client)
 	if err != nil {
 		log.Fatalf("实例化合约过滤器失败: %v", err)
