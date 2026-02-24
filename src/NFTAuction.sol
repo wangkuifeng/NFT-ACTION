@@ -74,6 +74,8 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     error InvalidTime();
     error AuctionAlreadyExists();
     error NotNFTOwner();
+    // 👇 [新增] 取消时如果已经有人出价，则拦截
+    error BidsAlreadyPlaced();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -245,8 +247,9 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         if (!auction.active) revert AuctionNotActive();
         // 只有卖家自己可以取消
         if (msg.sender != auction.seller) revert NotSeller();
-        // 必须在拍卖正式开始之前取消 
-        if (block.timestamp >= auction.startTime) revert AuctionAlreadyStarted();
+        
+        // 👇👇 【核心修改点】：不再校验开始时间，而是校验是否有人出价
+        if (auction.highestBidder != address(0)) revert BidsAlreadyPlaced();
 
         // 2. 更新状态 (Effects)
         auction.active = false;

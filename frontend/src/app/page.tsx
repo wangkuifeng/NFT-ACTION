@@ -53,6 +53,20 @@ const AUCTION_ABI = [
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "auctionId", "type": "uint256" }],
+    "name": "cancelAuction",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "auctionId", "type": "uint256" }],
+    "name": "endAuction",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
   }
 ]
 
@@ -77,6 +91,8 @@ export default function Home() {
   const [isMinting, setIsMinting] = useState(false)
   const [isListing, setIsListing] = useState(false)
   const [isBidding, setIsBidding] = useState(false)
+
+  const [processingId, setProcessingId] = useState<string | null>(null)
 
   const { address, isConnected } = useAccount()
   const { connect } = useConnect()
@@ -105,6 +121,11 @@ export default function Home() {
     setMounted(true)
     fetchStats().then(setStats)
     fetchAuctions().then(setAuctions)
+  // [新增] 定时刷新组件，确保拍卖到期状态（isExpired）实时更新
+    const timer = setInterval(() => {
+      setMounted(prev => !prev); setMounted(true);
+    }, 10000); // 每 10 秒刷新一次
+    return () => clearInterval(timer);
   }, [])
 
   // ==========================================
@@ -243,6 +264,49 @@ export default function Home() {
     }
   }
   
+// 👉 [新增] 取消拍卖方法
+  const handleCancelAuction = async (auctionId: string) => {
+    try {
+      setProcessingId(`${auctionId}-cancel`)
+      const hash = await writeContractAsync({
+        address: AUCTION_CONTRACT_ADDRESS,
+        abi: AUCTION_ABI,
+        functionName: 'cancelAuction',
+        args: [BigInt(auctionId)],
+      })
+      await publicClient!.waitForTransactionReceipt({ hash })
+      setTimeout(() => {
+        fetchStats().then(setStats)
+        fetchAuctions().then(setAuctions)
+      }, 1500) // 稍微多等一下，让后端数据库更新完
+    } catch(err) {
+      console.error("取消失败", err)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  // 👉 [新增] 结束拍卖方法
+  const handleEndAuction = async (auctionId: string) => {
+    try {
+      setProcessingId(`${auctionId}-end`)
+      const hash = await writeContractAsync({
+        address: AUCTION_CONTRACT_ADDRESS,
+        abi: AUCTION_ABI,
+        functionName: 'endAuction',
+        args: [BigInt(auctionId)],
+      })
+      await publicClient!.waitForTransactionReceipt({ hash })
+      setTimeout(() => {
+        fetchStats().then(setStats)
+        fetchAuctions().then(setAuctions)
+      }, 1500)
+    } catch(err) {
+      console.error("结束失败", err)
+    } finally {
+      setProcessingId(null)
+    }
+  }
 
   return (
     <main className="min-h-screen bg-gray-50 text-slate-900 p-8">
@@ -302,36 +366,96 @@ export default function Home() {
       <div className="max-w-6xl mx-auto">
         <h2 className="text-2xl font-black mb-8">热门拍卖 🔥</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-          {auctions.map((item: any) => (
-            <div key={item.auction_id} className="bg-white rounded-[2.5rem] p-4 shadow-xl shadow-gray-200/50 hover:-translate-y-2 transition-all duration-300 group">
-              <div className="aspect-square bg-linear-to-tr from-blue-50 to-purple-50 rounded-4xl mb-4 flex items-center justify-center text-6xl group-hover:scale-95 transition-transform">
-                🖼️
-              </div>
-              
-              <div className="px-2">
-                <div className="flex justify-between items-center mb-2">
-                  <h3 className="text-xl font-bold">Token #{item.token_id}</h3>
-                  <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">LIVE</span>
+          {auctions.map((item: any) => {
+            // 👉 [新增] 动态计算这三个核心状态
+            const isSeller = address?.toLowerCase() === item.seller?.toLowerCase();
+            const hasNoBids = item.highest_bid === "0";
+            // 后端的 end_time 默认是秒级时间戳，乘以 1000 转为毫秒比对
+            const isExpired = Date.now() > Number(item.end_time) * 1000;
+
+            return (
+              <div key={item.auction_id} className="bg-white rounded-[2.5rem] p-4 shadow-xl shadow-gray-200/50 hover:-translate-y-2 transition-all duration-300 group">
+                {/* 1. 修改图片区域：过期加上蒙版和印章 */}
+                <div className="aspect-square bg-linear-to-tr from-blue-50 to-purple-50 rounded-4xl mb-4 flex items-center justify-center text-6xl group-hover:scale-95 transition-transform relative">
+                  🖼️
+                  {isExpired && (
+                    <div className="absolute inset-0 bg-white/60 backdrop-blur-[2px] rounded-4xl flex items-center justify-center">
+                      <span className="bg-red-500 text-white px-4 py-2 rounded-xl font-bold rotate-[-10deg] shadow-lg">已结束</span>
+                    </div>
+                  )}
                 </div>
-                <p className="text-gray-400 text-xs mb-6 truncate" title={item.nft_contract}>合约: {item.nft_contract}</p>
                 
-                <div className="flex justify-between items-end bg-gray-50 p-4 rounded-2xl">
-                  <div>
-                    <p className="text-[10px] text-gray-400 font-bold uppercase">当前最高价</p>
-                    <p className="text-xl font-black text-blue-600">
-                      {item.highest_bid === "0" ? (Number(item.start_price) / 1e18).toFixed(4) : (Number(item.highest_bid) / 1e18).toFixed(4)} ETH
-                    </p>
+                <div className="px-2">
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="text-xl font-bold">Token #{item.token_id}</h3>
+                    {/* 2. 修改 LIVE 标签：只有未过期才显示 */}
+                    {!isExpired && <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">LIVE</span>}
                   </div>
-                  <button 
-                    onClick={() => openBidModal(item)} 
-                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-600 transition-colors"
-                  >
-                    参与竞拍
-                  </button>
+                  <p className="text-gray-400 text-xs mb-6 truncate" title={item.nft_contract}>合约: {item.nft_contract}</p>
+                  
+                  <div className="flex justify-between items-end bg-gray-50 p-4 rounded-2xl">
+                    {/* 👇 从这里开始替换 👇 */}
+                  <div className="flex justify-between items-center bg-gray-50 p-4 rounded-2xl">
+                    
+                    {/* 1. 左侧价格区：增加 min-w-0 防止价格过长撑爆容器 */}
+                    <div className="min-w-0 pr-2">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">当前最高价</p>
+                      <p className={`text-xl font-black truncate ${isExpired ? 'text-gray-500' : 'text-blue-600'}`}>
+                        {item.highest_bid === "0" ? (Number(item.start_price) / 1e18).toFixed(4) : (Number(item.highest_bid) / 1e18).toFixed(4)} ETH
+                      </p>
+                    </div>
+                    
+                    {/* 2. 右侧按钮区 */}
+                    <div className="flex gap-2 shrink-0">
+                      
+                      {/* 👇 [新增逻辑] 优先判断数据库的真实状态：如果已经彻底完结交割 */}
+                      {item.status === 'Ended' ? (
+                        <button 
+                          disabled
+                          className="bg-gray-200 text-gray-500 px-5 py-2.5 rounded-xl text-sm font-bold cursor-not-allowed whitespace-nowrap"
+                        >
+                          已完结
+                        </button>
+                      ) : (
+                        /* 如果还没完结，走之前的逻辑 */
+                        <>
+                          {isSeller && hasNoBids && !isExpired && (
+                            <button 
+                              onClick={() => handleCancelAuction(item.auction_id)} 
+                              disabled={processingId === `${item.auction_id}-cancel`}
+                              className="bg-red-50 text-red-600 border border-red-200 px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-red-100 transition-colors disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {processingId === `${item.auction_id}-cancel` ? '...' : '取消'}
+                            </button>
+                          )}
+
+                          {isExpired ? (
+                            <button 
+                              onClick={() => handleEndAuction(item.auction_id)} 
+                              disabled={processingId === `${item.auction_id}-end`}
+                              className="bg-green-500 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-green-600 transition-colors shadow-md disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {processingId === `${item.auction_id}-end` ? '结算中...' : '结束并交割'}
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => openBidModal(item)} 
+                              className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-600 transition-colors whitespace-nowrap"
+                            >
+                              竞拍
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                  </div>
+                  {/* 👆 到这里结束替换 👆 */}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 

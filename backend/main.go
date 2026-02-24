@@ -58,6 +58,10 @@ func startEventListener(db *gorm.DB) {
 	auctionEndedChan := make(chan *auction.NFTAuctionAuctionEnded)
 	subEnded, _ := auctionFilterer.WatchAuctionEnded(nil, auctionEndedChan, nil, nil)
 
+	// 4. [新增] 订阅 AuctionCancelled 事件
+	auctionCancelledChan := make(chan *auction.NFTAuctionAuctionCanceled)
+	subCanceled, _ := auctionFilterer.WatchAuctionCanceled(nil, auctionCancelledChan, nil)
+
 	fmt.Println("📡 链上事件监听器(全矩阵)已在后台启动...")
 
 	for {
@@ -68,7 +72,9 @@ func startEventListener(db *gorm.DB) {
 			log.Printf("Bid 订阅出错: %v", err)
 		case err := <-subEnded.Err():
 			log.Printf("Ended 订阅出错: %v", err)
-
+		// [新增] 错误处理
+		case err := <-subCanceled.Err():
+			log.Printf("Canceled 订阅出错: %v", err)
 		// 处理创建拍卖
 		case event := <-auctionCreatedChan:
 			fmt.Println("\n🔥 [事件] 监听到创建拍卖...")
@@ -113,6 +119,14 @@ func startEventListener(db *gorm.DB) {
 					"status": "Ended",
 					"winner": event.Winner.Hex(),
 				})
+		// 5. [新增] 处理拍卖取消
+		case event := <-auctionCancelledChan:
+			fmt.Println("\n🚫 [事件] 监听到拍卖被取消...")
+			db.Model(&models.AuctionRecord{}).
+				Where("auction_id = ?", event.AuctionId.String()).
+				Updates(map[string]interface{}{
+					"status": "Cancelled", // 更新状态为已取消
+				})
 		}
 	}
 }
@@ -137,7 +151,7 @@ func main() {
 	// API 1: 获取所有进行中的拍卖列表 [cite: 129]
 	r.GET("/api/auctions", func(c *gin.Context) {
 		var auctions []models.AuctionRecord
-		db.Where("status = ?", "Active").Find(&auctions)
+		db.Where("status IN ?", []string{"Active", "Ended"}).Order("created_at desc").Find(&auctions)
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": auctions})
 	})
 
