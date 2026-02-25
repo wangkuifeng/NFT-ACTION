@@ -87,12 +87,25 @@ export default function Home() {
   const [selectedItem, setSelectedItem] = useState<any>(null) 
   const [bidAmountInput, setBidAmountInput] = useState('')    
 
+  // 👉 1. 新增：首页 Tabs 状态
+  const [activeTab, setActiveTab] = useState<'active' | 'ended'>('active')
+
+  // 👉 2. 新增：拍卖详情与出价历史状态
+  const [showDetailsModal, setShowDetailsModal] = useState(false)
+  const [bidHistory, setBidHistory] = useState<any[]>([])
+  const [isLoadingBids, setIsLoadingBids] = useState(false)
+
   // 👉 新增：为每个核心动作设置独立的 Loading 状态，体验拉满
   const [isMinting, setIsMinting] = useState(false)
   const [isListing, setIsListing] = useState(false)
   const [isBidding, setIsBidding] = useState(false)
 
   const [processingId, setProcessingId] = useState<string | null>(null)
+
+  // 👉 1. 新增：我的 NFT 画廊状态
+  const [showNFTModal, setShowNFTModal] = useState(false)
+  const [myNFTs, setMyNFTs] = useState<any[]>([])
+  const [isLoadingNFTs, setIsLoadingNFTs] = useState(false)
 
   const { address, isConnected } = useAccount()
   const { connect } = useConnect()
@@ -117,16 +130,47 @@ export default function Home() {
 
   const latestTokenId = nextTokenIdRaw ? Number(nextTokenIdRaw) - 1 : 0
 
+  // 👉 替换原有的 useEffect
   useEffect(() => {
     setMounted(true)
     fetchStats().then(setStats)
-    fetchAuctions().then(setAuctions)
-  // [新增] 定时刷新组件，确保拍卖到期状态（isExpired）实时更新
+    
+    // 每次 activeTab 改变，就传给 fetchAuctions 去获取新数据
+    fetchAuctions(activeTab).then(setAuctions)
+    
     const timer = setInterval(() => {
       setMounted(prev => !prev); setMounted(true);
-    }, 10000); // 每 10 秒刷新一次
+    }, 10000); 
     return () => clearInterval(timer);
-  }, [])
+  }, [activeTab]) // 👈 别忘了把 activeTab 加到依赖数组里
+
+
+  // 👉 2. 新增：读取并展示我的 NFT 列表
+  const handleOpenMyNFTs = async () => {
+    if (!address) return alert("请先连接钱包！")
+    setShowNFTModal(true)
+    setIsLoadingNFTs(true)
+    try {
+      // 请确保这里的请求路径与你的后端/代理一致
+      const res = await fetch(`http://localhost:8080/api/users/${address}/nfts`)
+      const data = await res.json()
+      // 假设后端返回 { "nfts": [...] }，请根据实际字段调整
+      setMyNFTs(data.nfts || []) 
+    } catch (err) {
+      console.error("获取个人 NFT 失败", err)
+    } finally {
+      setIsLoadingNFTs(false)
+    }
+  }
+
+  // 👉 新增：在画廊点击 NFT 后，直接跳转上架表单
+  const handleSelectNFTForAuction = (nft: any) => {
+    // 假设后端返回的字段是 contract_address 和 token_id，请根据实际情况替换
+    setFormNftContract(nft.contractAddress || nft.contract_address || nft.contract) 
+    setFormTokenId(nft.tokenId || nft.token_id)
+    setShowNFTModal(false) // 关掉画廊
+    setShowModal(true)     // 弹出上架向导（数据已自动填好！）
+  }
 
   // ==========================================
   // 1. 丝滑铸造：带链上监听 + 自动回填表单
@@ -224,6 +268,24 @@ export default function Home() {
 
     setBidAmountInput(minRequiredBid.toFixed(4).replace(/\.?0+$/, '')) 
     setShowBidModal(true)
+  }
+
+// 👉 修正版：打开详情弹窗并拉取出价历史
+  const handleOpenDetails = async (item: any) => {
+    setSelectedItem(item)
+    setShowDetailsModal(true)
+    setIsLoadingBids(true)
+    try {
+      const res = await fetch(`http://localhost:8080/api/auctions/${item.auction_id}/bids`)
+      const json = await res.json()
+      // ✅ 必须取 json.data，如果后端返回 null 则用 [] 兜底
+      setBidHistory(json.data || []) 
+    } catch (err) {
+      console.error("获取出价历史失败", err)
+      setBidHistory([])
+    } finally {
+      setIsLoadingBids(false)
+    }
   }
 
   const submitBid = async () => {
@@ -331,6 +393,13 @@ export default function Home() {
             >
               + 发布拍卖
             </button>
+            {/* 👉 3. 新增：在上面那个按钮旁边加上这个： */}
+            <button 
+              onClick={handleOpenMyNFTs}
+              className="bg-indigo-50 text-indigo-600 border border-indigo-200 px-5 py-2 rounded-xl font-bold hover:bg-indigo-100 transition"
+            >
+              🖼️ 我的 NFT
+            </button>
             <span className="text-sm font-mono bg-blue-50 text-blue-600 px-3 py-2 rounded-xl border border-blue-100">
               {address?.slice(0, 6)}...{address?.slice(-4)}
             </span>
@@ -364,7 +433,25 @@ export default function Home() {
 
       {/* 拍卖卡片网格 */}
       <div className="max-w-6xl mx-auto">
-        <h2 className="text-2xl font-black mb-8">热门拍卖 🔥</h2>
+        <div className="flex justify-between items-end mb-8 border-b pb-4">
+          <h2 className="text-3xl font-black">拍卖大厅 🏛️</h2>
+          
+          {/* Tabs 切换组件 */}
+          <div className="flex bg-gray-100 p-1 rounded-xl">
+            <button 
+              onClick={() => setActiveTab('active')}
+              className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${activeTab === 'active' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              🔥 进行中
+            </button>
+            <button 
+              onClick={() => setActiveTab('ended')}
+              className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${activeTab === 'ended' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              🏁 已结束
+            </button>
+          </div>
+          </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
           {auctions.map((item: any) => {
             // 👉 [新增] 动态计算这三个核心状态
@@ -408,13 +495,14 @@ export default function Home() {
                     {/* 2. 右侧按钮区 */}
                     <div className="flex gap-2 shrink-0">
                       
-                      {/* 👇 [新增逻辑] 优先判断数据库的真实状态：如果已经彻底完结交割 */}
-                      {item.status === 'Ended' ? (
+                      {/* 👇 [升级逻辑] 优先判断数据库的闭环状态：包含"已交割(Ended)"和"已取消(Cancelled)" */}
+                      {['Ended', 'Cancelled', 'ended', 'cancelled'].includes(item.status || item.Status) ? (
                         <button 
                           disabled
-                          className="bg-gray-200 text-gray-500 px-5 py-2.5 rounded-xl text-sm font-bold cursor-not-allowed whitespace-nowrap"
+                          className="bg-gray-100 text-gray-400 border border-gray-200 px-5 py-2.5 rounded-xl text-sm font-bold cursor-not-allowed whitespace-nowrap"
                         >
-                          已完结
+                          {/* 正则判断：如果是取消状态显示已取消，否则显示已完结 */}
+                          {/cancel/i.test(item.status || item.Status || '') ? '已取消 🚫' : '已完结 🏁'}
                         </button>
                       ) : (
                         /* 如果还没完结，走之前的逻辑 */
@@ -439,10 +527,10 @@ export default function Home() {
                             </button>
                           ) : (
                             <button 
-                              onClick={() => openBidModal(item)} 
+                              onClick={() => handleOpenDetails(item)} 
                               className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-600 transition-colors whitespace-nowrap"
                             >
-                              竞拍
+                            看详情
                             </button>
                           )}
                         </>
@@ -506,6 +594,75 @@ export default function Home() {
         </div>
       )}
 
+{/* ====== 在这里插入 ====== */}
+      {/* 👉 4. 新增：精美的 我的 NFT 画廊弹窗 */}
+      {showNFTModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-4xl w-full shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-black">我的 NFT 资产库</h2>
+              <button onClick={() => setShowNFTModal(false)} className="text-gray-400 hover:text-red-500 font-bold text-xl">✕</button>
+            </div>
+            
+            <div className="overflow-y-auto pr-2 custom-scrollbar">
+              {isLoadingNFTs ? (
+                <div className="flex flex-col items-center justify-center py-20">
+                  <span className="text-4xl animate-bounce mb-4">📡</span>
+                  <p className="text-gray-500 font-bold">正在从节点同步你的资产...</p>
+                </div>
+              ) : myNFTs.length > 0 ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                  {myNFTs.map((nft, idx) => (
+                    <div key={idx} className="bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 group relative">
+                      {/* 图片区域 */}
+                      <div className="aspect-square bg-gray-50 flex items-center justify-center relative">
+                        {nft.imageUrl || nft.image_url ? (
+                          <img 
+                            src={nft.imageUrl || nft.image_url} 
+                            alt={nft.name} 
+                            className="object-cover w-full h-full" 
+                            onError={(e) => { e.currentTarget.src = 'https://via.placeholder.com/150?text=No+Image' }} 
+                          />
+                        ) : (
+                          <span className="text-4xl">🖼️</span>
+                        )}
+                        
+                        {/* 悬浮遮罩层与一键上架按钮 */}
+                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[1px]">
+                          <button 
+                            onClick={() => handleSelectNFTForAuction(nft)}
+                            className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg hover:scale-105 transition-transform"
+                          >
+                            ⚡️ 一键上架
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 文字信息区域 */}
+                      <div className="p-4">
+                        <p className="text-[10px] text-gray-400 font-bold uppercase truncate mb-1">
+                          {nft.collectionName || nft.collection_name || 'Unknown Collection'}
+                        </p>
+                        <h3 className="text-sm font-black truncate text-slate-800">
+                          {nft.name || `Token #${nft.tokenId || nft.token_id}`}
+                        </h3>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-20 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                  <span className="text-4xl mb-4 block">🍃</span>
+                  <p className="text-gray-500 font-bold">你的钱包里还没有 NFT 哦</p>
+                  <p className="text-xs text-gray-400 mt-2">去领一个测试 NFT 试试看吧</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ====== 结束插入 ====== */}
+
       {/* ========================================================= */}
       {/* 精美的出价弹窗 (Bid Modal)  */}
       {/* ========================================================= */}
@@ -565,6 +722,94 @@ export default function Home() {
         </div>
       )}
       
+
+    {/* ========================================================= */}
+      {/* 拍卖详情与出价历史弹窗 (Details Modal) */}
+      {/* ========================================================= */}
+      {showDetailsModal && selectedItem && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-2xl w-full shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-6 border-b pb-4">
+              <h2 className="text-2xl font-black text-slate-900">拍卖详情: Token #{selectedItem.token_id}</h2>
+              <button onClick={() => setShowDetailsModal(false)} className="text-gray-400 hover:text-red-500 font-bold text-xl">✕</button>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              {/* 左侧：NFT 信息与操作 */}
+              <div className="bg-gray-50 rounded-2xl p-6 flex flex-col justify-center items-center text-center">
+                <div className="text-6xl mb-4">🖼️</div>
+                <p className="text-gray-500 text-xs mb-1">合约地址</p>
+                <p className="font-mono text-sm truncate w-full mb-4 px-4">{selectedItem.nft_contract}</p>
+                <p className="text-gray-500 text-xs mb-1">当前最高价</p>
+                <p className="text-3xl font-black text-blue-600 mb-6">
+                  {selectedItem.highest_bid === "0" ? (Number(selectedItem.start_price) / 1e18).toFixed(4) : (Number(selectedItem.highest_bid) / 1e18).toFixed(4)} ETH
+                </p>
+                
+                {/* 详情页里保留出价入口（仅当进行中时显示） */}
+                {selectedItem.status !== 'Ended' && Date.now() < Number(selectedItem.end_time) * 1000 && (
+                  <button 
+                    onClick={() => {
+                      setShowDetailsModal(false); // 先关详情
+                      openBidModal(selectedItem); // 打开出价
+                    }} 
+                    className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition"
+                  >
+                    我要出价 🔨
+                  </button>
+                )}
+              </div>
+
+              {/* 右侧：出价流水账 */}
+              <div className="flex flex-col">
+                <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                  <span>📜 出价历史</span>
+                  <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">{bidHistory.length} 次</span>
+                </h3>
+                
+                <div className="flex-1 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar bg-white rounded-xl border border-gray-100">
+                  {isLoadingBids ? (
+                    <div className="text-center py-10 text-gray-400">加载流水记录中...</div>
+                  ) : bidHistory.length > 0 ? (
+                    <div className="divide-y divide-gray-100">
+                        {/* 👉 替换为：兼容后端真实的字段名 */}
+                        {bidHistory.map((bid, index) => {
+                          // 从后端的真实 JSON 中提取字段（兼容首字母大写或小写）
+                          const bidder = bid.Bidder || bid.bidder || bid.bidder_address || "";
+                          const amount = bid.Amount || bid.amount || bid.bid_amount || "0";
+                          // 提取真实的链上出价时间戳
+                          const timestamp = bid.Timestamp || bid.timestamp || bid.created_at || (Date.now() / 1000);
+
+                          return (
+                            <div key={index} className="p-3 hover:bg-gray-50 transition flex justify-between items-center text-sm">
+                              <div>
+                                <p className="font-mono font-bold text-slate-700">
+                                  {bidder ? `${bidder.slice(0, 6)}...${bidder.slice(-4)}` : '未知出价者'}
+                                </p>
+                                <p className="text-[10px] text-gray-400 mt-1">
+                                  {new Date(timestamp * 1000).toLocaleString()}
+                                </p>
+                              </div>
+                              <div className="font-black text-blue-600">
+                                {(Number(amount) / 1e18).toFixed(4)} ETH
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 text-gray-400 flex flex-col items-center">
+                      <span className="text-2xl mb-2">👻</span>
+                      <p>暂时还没有人出价</p>
+                      <p className="text-xs mt-1">抢个首发沙发吧！</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   )
 }

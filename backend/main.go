@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -148,10 +147,20 @@ func main() {
 		c.Next()
 	})
 
-	// API 1: 获取所有进行中的拍卖列表 [cite: 129]
+	// API 1: 获取所有进行中的拍卖列表 (支持状态过滤)
 	r.GET("/api/auctions", func(c *gin.Context) {
+		statusFilter := c.Query("status") // 获取前端传来的 active 或 ended
 		var auctions []models.AuctionRecord
-		db.Where("status IN ?", []string{"Active", "Ended"}).Order("created_at desc").Find(&auctions)
+
+		// 根据状态查询
+		if statusFilter == "ended" {
+			// 已结束：包含 Ended 和 Cancelled 状态
+			db.Where("status IN ?", []string{"Ended", "Cancelled"}).Order("created_at desc").Find(&auctions)
+		} else {
+			// 默认查进行中
+			db.Where("status = ?", "Active").Order("created_at desc").Find(&auctions)
+		}
+
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": auctions})
 	})
 
@@ -202,26 +211,26 @@ func main() {
 	r.GET("/api/users/:address/nfts", func(c *gin.Context) {
 		ownerAddress := c.Param("address")
 
-		// 拦截器：如果是我们本地 Anvil 的测试地址，由于 Alchemy 查不到，直接返回 Mock 数据保障前端开发
-		if strings.EqualFold(ownerAddress, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266") {
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"data": []gin.H{
-					{
-						"contract": gin.H{"address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"}, // 你本地部署的 Mock NFT 地址
-						"id":       gin.H{"tokenId": "1"},
-						"title":    "Mock NFT #1",
-						"media":    []gin.H{{"gateway": "https://via.placeholder.com/200"}}, // 假图片占位
-					},
-				},
-			})
-			return
-		}
+		// // 拦截器：如果是我们本地 Anvil 的测试地址，由于 Alchemy 查不到，直接返回 Mock 数据保障前端开发
+		// if strings.EqualFold(ownerAddress, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266") {
+		// 	c.JSON(http.StatusOK, gin.H{
+		// 		"success": true,
+		// 		"data": []gin.H{
+		// 			{
+		// 				"contract": gin.H{"address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"}, // 你本地部署的 Mock NFT 地址
+		// 				"id":       gin.H{"tokenId": "1"},
+		// 				"title":    "Mock NFT #1",
+		// 				"media":    []gin.H{{"gateway": "https://via.placeholder.com/200"}}, // 假图片占位
+		// 			},
+		// 		},
+		// 	})
+		// 	return
+		// }
 
 		// 真实的 Alchemy API 调用逻辑 (未来上测试网/主网时生效)
 		// 注意：这里的 demo key 仅供测试，未来请去 alchemy.com 申请你自己的 API Key
 		alchemyApiKey := "demo"
-		url := fmt.Sprintf("https://eth-mainnet.g.alchemy.com/nft/v3/%s/getNFTsForOwner?owner=%s&withMetadata=true", alchemyApiKey, ownerAddress)
+		url := fmt.Sprintf("https://eth-sepolia.g.alchemy.com/nft/v3/%s/getNFTsForOwner?owner=%s&withMetadata=true", alchemyApiKey, ownerAddress)
 
 		resp, err := http.Get(url)
 		if err != nil {
