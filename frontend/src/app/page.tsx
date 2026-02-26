@@ -6,8 +6,8 @@ import { useAccount, useConnect, useDisconnect, useWriteContract, useReadContrac
 import { injected } from 'wagmi/connectors'
 import { parseEther } from 'viem'
 import Link from 'next/link'
+import toast from 'react-hot-toast' // 👉 引入丝滑弹窗
 import AuctionCard from '@/components/AuctionCard'
-import toast from 'react-hot-toast'
 
 import { 
   AUCTION_CONTRACT_ADDRESS, 
@@ -92,33 +92,54 @@ export default function Home() {
 
   // 读取并展示我的 NFT 列表
   const handleOpenMyNFTs = async () => {
-    if (!address) return toast.error("请先连接钱包！")
+    if (!address) return toast.error("请先连接钱包！") // 👉 替换 alert
     setShowNFTModal(true)
     setIsLoadingNFTs(true)
     try {
       const res = await fetch(`http://localhost:8080/api/users/${address}/nfts`)
       const data = await res.json()
-      setMyNFTs(data.data || []) // 根据后端实际返回结构调整
+      setMyNFTs(data.data || []) 
     } catch (err) {
       console.error("获取个人 NFT 失败", err)
+      toast.error("获取资产失败，请检查网络")
     } finally {
       setIsLoadingNFTs(false)
     }
   }
 
-  // 画廊点击 NFT 后跳转上架表单
+// 画廊点击 NFT 后跳转上架表单 (已修复 [object Object] 问题)
   const handleSelectNFTForAuction = (nft: any) => {
-    setFormNftContract(nft.contractAddress || nft.contract_address || nft.contract || MOCK_NFT_ADDRESS) 
-    setFormTokenId(nft.tokenId || nft.token_id)
-    setShowNFTModal(false) 
-    setShowModal(true)    
-  }
+    // 1. 精准提取合约地址：处理 Alchemy 的 { contract: { address: "..." } } 结构
+    let address = MOCK_NFT_ADDRESS;
+    if (nft.contract?.address) {
+      address = nft.contract.address;
+    } else if (typeof nft.contract === 'string') {
+      address = nft.contract;
+    } else if (nft.contractAddress) {
+      address = nft.contractAddress;
+    }
 
+    // 2. 精准提取 Token ID：处理 Alchemy 的 { id: { tokenId: "..." } } 结构
+    let tId = "";
+    const rawTokenId = nft.id?.tokenId || nft.tokenId || "";
+    if (rawTokenId) {
+      // Alchemy 有时会返回十六进制的 tokenId (例如 "0x0c")，我们将它转为十进制，方便输入框显示
+      tId = rawTokenId.toString().startsWith('0x') 
+        ? BigInt(rawTokenId).toString() 
+        : rawTokenId;
+    }
+
+    // 3. 回填表单并打开弹窗
+    setFormNftContract(address);
+    setFormTokenId(tId);
+    setShowNFTModal(false); 
+    setShowModal(true);    
+  }
   // ==========================================
-  // 1. 丝滑铸造
+  // 1. 丝滑铸造 (接入 toast.promise)
   // ==========================================
   const handleMintTestNFT = async () => {
-    if (!address) return alert("请先连接钱包！")
+    if (!address) return toast.error("请先连接钱包！")
     try {
       setIsMinting(true) 
       const hash = await writeContractAsync({
@@ -128,45 +149,70 @@ export default function Home() {
         args: [address], 
       })
 
-      await publicClient!.waitForTransactionReceipt({ hash })
+      // 👉 核心：用 toast.promise 包装等待上链的过程
+      await toast.promise(
+        publicClient!.waitForTransactionReceipt({ hash }),
+        {
+          loading: '⛓️ 铸造上链中，请在钱包确认并等待区块打包...',
+          success: '🎉 铸造成功且已确认上链！',
+          error: '❌ 铸造失败，请重试',
+        }
+      )
+
       const { data: newNext } = await refetchNextTokenId()
       const mintedId = Number(newNext) - 1
 
       setFormTokenId(mintedId.toString())
-      alert(`🎉 铸造成功且已确认上链！\n\n你获得了 Token #${mintedId}\n系统已自动为你填入上架表单，去点击【+ 发布拍卖】吧！`)
+      toast.success(`你获得了 Token #${mintedId}\n系统已自动为你填入表单，快去发布吧！`, { duration: 5000, icon: '🎁' })
     } catch (err) {
       console.error("铸造失败", err)
-      alert("交易失败或被取消！")
+      toast.error("交易被取消或发起失败") // 👉 替换 alert
     } finally {
       setIsMinting(false) 
     }
   }
 
   // ==========================================
-  // 2. 丝滑上架
+  // 2. 丝滑上架 (接入双重 toast.promise)
   // ==========================================
   const handleApproveAndList = async () => {
-    if (!formTokenId || !formStartPrice) return alert("请完整填写信息")
+    if (!formTokenId || !formStartPrice) return toast.error("请完整填写信息")
     try {
       setIsListing(true) 
       const startPriceWei = parseEther(formStartPrice)
       const durationSeconds = BigInt(Number(formDuration) * 24 * 60 * 60) 
 
+      // 步骤 A：授权交易
       const hashApprove = await writeContractAsync({
         address: formNftContract as `0x${string}`,
         abi: ERC721_ABI,
         functionName: 'approve',
         args: [AUCTION_CONTRACT_ADDRESS, BigInt(formTokenId)],
       })
-      await publicClient!.waitForTransactionReceipt({ hash: hashApprove })
+      await toast.promise(
+        publicClient!.waitForTransactionReceipt({ hash: hashApprove }),
+        {
+          loading: '🔓 正在授权 NFT，请耐心等待上链...',
+          success: '✅ 授权成功！准备发起上架交易...',
+          error: '❌ 授权失败',
+        }
+      )
 
+      // 步骤 B：上架交易
       const hashCreate = await writeContractAsync({
         address: AUCTION_CONTRACT_ADDRESS,
         abi: AUCTION_ABI,
         functionName: 'createAuction',
         args: [formNftContract as `0x${string}`, BigInt(formTokenId), startPriceWei, BigInt(0), durationSeconds],
       })
-      await publicClient!.waitForTransactionReceipt({ hash: hashCreate })
+      await toast.promise(
+        publicClient!.waitForTransactionReceipt({ hash: hashCreate }),
+        {
+          loading: '📢 正在上架拍卖，等待区块打包...',
+          success: '🎉 上架成功！你的 NFT 已进入拍卖大厅！',
+          error: '❌ 上架失败',
+        }
+      )
 
       setShowModal(false)
       setTimeout(() => {
@@ -176,17 +222,17 @@ export default function Home() {
 
     } catch (err) {
       console.error("上架流程失败", err)
-      alert("流程中断！如果你拒绝了交易，请重新操作。")
+      toast.error("流程中断！如果你拒绝了交易，请重新操作。")
     } finally {
       setIsListing(false)
     }
   }
 
   // ==========================================
-  // 3. 丝滑出价与详情查询
+  // 3. 丝滑出价 (接入 toast.promise)
   // ==========================================
   const openBidModal = (item: any) => {
-    if (!isConnected) return alert("请先连接钱包！")
+    if (!isConnected) return toast.error("请先连接钱包！")
     setSelectedItem(item)
 
     const isFirstBid = item.highest_bid === "0"
@@ -221,43 +267,40 @@ export default function Home() {
     
     const minRequiredBid = isFirstBid ? currentPriceEth : currentPriceEth * 1.05
     if (isNaN(inputEth) || inputEth < minRequiredBid * 0.9999) {
-      return alert(`❌ 出价无效！\n\n当前最低要求为: ${minRequiredBid.toFixed(4)} ETH`)
+      return toast.error(`出价无效！当前最低要求为: ${minRequiredBid.toFixed(4)} ETH`) // 👉 替换 alert
     }
 
     try {
       setIsBidding(true)
-      // 1. 准备发送交易
       const hash = await writeContractAsync({
         address: AUCTION_CONTRACT_ADDRESS,
         abi: AUCTION_ABI,
         functionName: 'bidAuction',
         args: [BigInt(selectedItem.auction_id)],
         value: parseEther(bidAmountInput),
-      });
+      })
       
-    // 👉 2. 核心改造：使用 toast.promise 完美包装等待过程
-    await toast.promise(
-      publicClient!.waitForTransactionReceipt({ hash }), // 监听的 Promise
-      {
-        loading: '🔨 出价上链中，请耐心等待区块打包...',
-        success: '🎉 出价成功！你目前是最高出价者！',
-        error: '❌ 出价失败，请重试',
-      }
-    );
+      await toast.promise(
+        publicClient!.waitForTransactionReceipt({ hash }),
+        {
+          loading: '🔨 出价上链中，请耐心等待区块打包...',
+          success: '🎉 出价成功！你目前是最高出价者！',
+          error: '❌ 出价失败，请重试',
+        }
+      )
       
       setShowBidModal(false) 
       setTimeout(() => {
         fetchStats().then(setStats)
         fetchAuctions(activeTab).then(setAuctions)
-      }, 1500)
+      }, 1000)
 
     } catch(err) {
-        console.error("出价失败", err);
-            // 用户在小狐狸里点击拒绝时的单独提示
-            toast.error("交易已被取消或发生错误"); 
-          } finally {
-            setIsBidding(false);
-          }
+      console.error("出价失败", err)
+      toast.error("交易已被取消或发生错误")
+    } finally {
+      setIsBidding(false)
+    }
   }
 
   return (
@@ -275,7 +318,7 @@ export default function Home() {
               onClick={handleMintTestNFT} disabled={isMinting}
               className="bg-purple-100 text-purple-600 px-4 py-2 rounded-xl font-bold hover:bg-purple-200 transition border border-purple-200 disabled:opacity-50"
             >
-              {isMinting ? '⛓️ 铸造上链中...' : '🎁 领测试 NFT'}
+              {isMinting ? '⛓️ 处理中...' : '🎁 领测试 NFT'}
             </button>
             <button 
               onClick={() => setShowModal(true)}
@@ -290,7 +333,6 @@ export default function Home() {
               🖼️ 我的 NFT
             </button>
             
-            {/* 👉 新增：通往个人中心的独立按钮 */}
             <Link 
               href="/profile" 
               className="bg-gray-800 text-white px-5 py-2 rounded-xl font-bold hover:bg-gray-900 transition shadow-md"
@@ -301,7 +343,7 @@ export default function Home() {
             <span className="text-sm font-mono bg-blue-50 text-blue-600 px-3 py-2 rounded-xl border border-blue-100">
               {address?.slice(0, 6)}...{address?.slice(-4)}
             </span>
-            <button onClick={() => disconnect()} className="text-sm text-gray-400 hover:text-red-500">断开</button>
+            <button onClick={() => { disconnect(); toast.success('钱包已断开'); }} className="text-sm text-gray-400 hover:text-red-500">断开</button>
           </div>
         ) : (
           <button 
@@ -350,7 +392,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 👉 重点：替换成了极其干净的 AuctionCard 循环 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
           {auctions.map((item: any) => (
             <AuctionCard 
@@ -367,9 +408,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ========================================================= */}
       {/* 精美的出价弹窗 (Bid Modal)  */}
-      {/* ========================================================= */}
       {showBidModal && selectedItem && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
@@ -418,7 +457,7 @@ export default function Home() {
                   disabled={isBidding}
                   className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold shadow-xl shadow-slate-200 hover:bg-blue-600 hover:shadow-blue-200 transition-all duration-300 disabled:opacity-50 text-lg"
                 >
-                  {isBidding ? '⏳ 链上打包中...' : '确认支付'}
+                  {isBidding ? '⏳ 钱包确认中...' : '确认支付'}
                 </button>
               </div>
             </div>
@@ -426,8 +465,7 @@ export default function Home() {
         </div>
       )}
       
-      {/* ==================== 抽离的独立弹窗区域 ==================== */}
-      
+      {/* 抽离的独立弹窗区域 */}
       <CreateAuctionModal 
         isOpen={showModal} onClose={() => setShowModal(false)}
         formNftContract={formNftContract} setFormNftContract={setFormNftContract}
