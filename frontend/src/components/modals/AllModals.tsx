@@ -174,7 +174,7 @@ export function AuctionDetailsModal({
               <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">{bidHistory.length} 次</span>
             </h3>
             
-            <div className="flex-1 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar bg-white rounded-xl border border-gray-100">
+           <div className="flex-1 overflow-y-auto max-h-75 pr-2 custom-scrollbar bg-white rounded-xl border border-gray-100">
               {isLoadingBids ? (
                 <div className="text-center py-10 text-gray-400">加载流水记录中...</div>
               ) : bidHistory.length > 0 ? (
