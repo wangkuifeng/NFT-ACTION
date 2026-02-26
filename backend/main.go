@@ -147,18 +147,44 @@ func main() {
 		c.Next()
 	})
 
-	// API 1: 获取所有进行中的拍卖列表 (支持状态过滤)
+	// API 1: 获取拍卖列表 (已升级：支持状态、卖家、出价者多维过滤)
 	r.GET("/api/auctions", func(c *gin.Context) {
-		statusFilter := c.Query("status") // 获取前端传来的 active 或 ended
-		var auctions []models.AuctionRecord
+		statusFilter := c.Query("status") // active 或 ended
+		sellerFilter := c.Query("seller") // 卖家地址
+		bidderFilter := c.Query("bidder") // 出价者地址
 
-		// 根据状态查询
+		var auctions []models.AuctionRecord
+		query := db.Model(&models.AuctionRecord{})
+
+		// 1. 卖家过滤 (查询"我创建的")
+		if sellerFilter != "" {
+			query = query.Where("seller = ?", sellerFilter)
+		}
+
+		// 2. 参与者过滤 (查询"我参与的")
+		if bidderFilter != "" {
+			// 使用子查询：先在 Bid 表中找到该用户出价过的所有 auction_id，再作为主查询条件
+			subQuery := db.Model(&models.BidRecord{}).Select("auction_id").Where("bidder = ?", bidderFilter)
+			query = query.Where("auction_id IN (?)", subQuery)
+		}
+
+		// 3. 状态过滤
 		if statusFilter == "ended" {
 			// 已结束：包含 Ended 和 Cancelled 状态
-			db.Where("status IN ?", []string{"Ended", "Cancelled"}).Order("created_at desc").Find(&auctions)
-		} else {
-			// 默认查进行中
-			db.Where("status = ?", "Active").Order("created_at desc").Find(&auctions)
+			query = query.Where("status IN ?", []string{"Ended", "Cancelled"})
+		} else if statusFilter == "active" {
+			// 明确指定查进行中
+			query = query.Where("status = ?", "Active")
+		} else if statusFilter == "" && sellerFilter == "" && bidderFilter == "" {
+			// 如果没有任何过滤条件 (通常是首页大厅请求)，默认只显示进行中的
+			query = query.Where("status = ?", "Active")
+		}
+		// 注：如果传了 seller 或 bidder 但没传 status，则返回该用户所有的记录，不限制状态
+
+		// 执行查询并按创建时间倒序
+		if err := query.Order("created_at desc").Find(&auctions).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询数据库失败"})
+			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": auctions})
@@ -248,6 +274,29 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data":    alchemyResult["ownedNfts"],
+		})
+	})
+
+	// ==========================================
+	// API 6: [新增] 用户个人统计数据 (供个人中心调用)
+	// ==========================================
+	r.GET("/api/users/:address/stats", func(c *gin.Context) {
+		address := c.Param("address")
+		var createdCount int64
+		var participatedCount int64
+
+		// 统计我创建的拍卖数量
+		db.Model(&models.AuctionRecord{}).Where("seller = ?", address).Count(&createdCount)
+
+		// 统计我参与的拍卖数量 (Distinct 去重：同一个拍卖出价多次只算1次参与)
+		db.Model(&models.BidRecord{}).Where("bidder = ?", address).Distinct("auction_id").Count(&participatedCount)
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"created_count":      createdCount,
+				"participated_count": participatedCount,
+			},
 		})
 	})
 
