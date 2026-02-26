@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -15,6 +16,7 @@ import (
 
 	"nft-auction-backend/contracts/auction"
 	"nft-auction-backend/models"
+	// 👉 新增：引入高精度计算包
 )
 
 func initDB() *gorm.DB {
@@ -211,22 +213,43 @@ func main() {
 	})
 
 	// ==========================================
-	// API 4: 平台统计数据 (供首页调用)
+	// API 4: 平台全局统计数据 (已加入 TVL 计算)
 	// ==========================================
 	r.GET("/api/stats", func(c *gin.Context) {
 		var auctionCount int64
 		var bidCount int64
 
-		// 使用 GORM 统计数据库中表的总行数
+		// 1. 基础统计
 		db.Model(&models.AuctionRecord{}).Count(&auctionCount)
 		db.Model(&models.BidRecord{}).Count(&bidCount)
+
+		// 2. TVL 计算核心逻辑
+		var activeAuctions []models.AuctionRecord
+		// 查询所有状态为 "Active" 的拍卖
+		db.Where("status = ?", "Active").Find(&activeAuctions)
+
+		totalWei := big.NewInt(0) // 初始化总和为 0
+
+		for _, auc := range activeAuctions {
+			// 如果该拍卖有人出价 (最高价不是 0)，则累加进总池子
+			if auc.HighestBid != "0" && auc.HighestBid != "" {
+				bidAmount, ok := new(big.Int).SetString(auc.HighestBid, 10)
+				if ok {
+					totalWei.Add(totalWei, bidAmount) // totalWei += bidAmount
+				}
+			}
+		}
+
+		// 3. 将 Wei 转换为 ETH，并格式化为保留 4 位小数的字符串
+		tvlEth := new(big.Float).Quo(new(big.Float).SetInt(totalWei), big.NewFloat(1e18))
+		tvlString := tvlEth.Text('f', 4)
 
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": gin.H{
 				"total_auctions": auctionCount,
 				"total_bids":     bidCount,
-				"tvl":            "0", // 进阶需求：计算所有活跃拍卖的最高价总和，这里暂用 0 占位
+				"tvl":            tvlString, // 👉 动态计算的 TVL 输出
 			},
 		})
 	})

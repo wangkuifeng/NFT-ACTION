@@ -365,9 +365,16 @@ export default function Home() {
           <p className="text-gray-400 text-xs font-bold uppercase mb-1">累计出价</p>
           <p className="text-3xl font-black">{stats?.total_bids || 0}</p>
         </div>
-        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-          <p className="text-gray-400 text-xs font-bold uppercase mb-1">当前网络</p>
-          <p className="text-3xl font-black text-blue-500">Sepolia Testnet</p>
+        {/* 👇 替换这里：原本的“当前网络”改为高大上的“TVL 总锁仓” 👇 */}
+        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 relative overflow-hidden group">
+          <div className="absolute -right-2 -top-2 text-6xl opacity-[0.03] group-hover:scale-110 transition-transform duration-500 pointer-events-none">💎</div>
+          <p className="text-gray-400 text-xs font-bold uppercase mb-1 relative z-10">TVL 总锁仓价值</p>
+          <div className="relative z-10 flex items-baseline gap-1">
+            <p className="text-3xl font-black text-transparent bg-clip-text bg-linear-to-r from-blue-600 to-purple-600">
+              {stats?.tvl || "0.0000"}
+            </p>
+            <span className="text-sm text-gray-400 font-bold">ETH</span>
+          </div>
         </div>
       </div>
 
