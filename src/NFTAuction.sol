@@ -28,6 +28,12 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     mapping(uint256 => Auction) public auctionData; 
 
     // ==========================================
+    // 👇 新增：平台抽成相关状态变量 (必须放在最后)
+    // ==========================================
+    uint256 public platformFeeBasisPoints; // 抽成比例基点，10000 = 100%，200 = 2%
+    address public feeRecipient;           // 平台金库地址（接收抽成）
+
+    // ==========================================
     // Events (后端监听数据源) 
     // ==========================================
     event AuctionCreated(
@@ -77,6 +83,8 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     // 👇 [新增] 取消时如果已经有人出价，则拦截
     error BidsAlreadyPlaced();
 
+    error InvalidFeePercent(); // 费率设置过高
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -86,6 +94,10 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         __Ownable_init(initialOwner);
         _transferOwnership(initialOwner);
         nextAuctionId = 1; 
+
+        // 👇 新增：初始化抽成配置
+        platformFeeBasisPoints = 200; // 默认 2% 抽成 (200 / 10000)
+        feeRecipient = initialOwner;  // 默认金库地址为合约部署者
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
@@ -224,10 +236,21 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         // 3. 交互 (Interactions)
         if (winner != address(0)) {
             // 情况 A：有人出价获胜
+            // 👇 新增：计算平台抽成和卖家应得金额
+            uint256 platformFee = (amount * platformFeeBasisPoints) / 10000;
+            uint256 sellerShare = amount - platformFee;
+
             // 买家拿走 NFT 
             IERC721(auction.nftContract).transferFrom(address(this), winner, auction.tokenId);
-            // 资金转给卖家 
-            (bool success, ) = payable(seller).call{value: amount}("");
+
+            // 👇 新增：资金分流 1 -> 平台抽成打入金库 (你的钱包)
+            if (platformFee > 0) {
+                (bool feeSuccess, ) = payable(feeRecipient).call{value: platformFee}("");
+                if (!feeSuccess) revert RefundFailed();
+            }
+
+            // 👇 修改：资金分流 2 -> 扣除手续费后的剩余资金转给卖家 
+            (bool success, ) = payable(seller).call{value: sellerShare}("");
             if (!success) revert RefundFailed();
         } else {
             // 情况 B：流拍 (没人参与出价)
@@ -260,5 +283,18 @@ contract NFTAuction is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         // 3. 交互 (Interactions)
         // 将 NFT 退还给卖家
         IERC721(auction.nftContract).transferFrom(address(this), auction.seller, auction.tokenId);
+    }
+
+    // ==========================================
+    // 管理员配置 (新增)
+    // ==========================================
+    function setPlatformFee(uint256 _feeBasisPoints) external onlyOwner {
+        if (_feeBasisPoints > 1000) revert InvalidFeePercent(); // 限制最高抽成为 10%，防止作恶
+        platformFeeBasisPoints = _feeBasisPoints;
+    }
+
+    function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        if (_feeRecipient == address(0)) revert InvalidTime(); // 借用现有error或新建一个，防止打入黑洞
+        feeRecipient = _feeRecipient;
     }
 }
